@@ -86,7 +86,7 @@ def display_intro_section():
         - Map tool optimized, manual coordinate entry added
         - Default assumptions simplified (debt financing only, no taxes or incentives, CAPEX subcategories zeroed by default)
         - Industrial load defaults: 500 MW load, 2,500 MW solar/BESS, 1,000 MW gas turbine
-        - Soft CAPEX, O&M, and fuel escalators set to zero; fuel price set to $8/MMBtu; Solar/BESS input limits scale with industrial load
+        - Soft CAPEX assumptions and O&M/fuel escalators set to zero; fuel price set to $8/MMBtu; Solar/BESS input limits scale with industrial load
         - Added Low, Middle, High, and High Cost/Cheaper Storage ($175/MWh) cost presets, plus Lower/Higher Cost Gas presets
         - Added 95% and 99% system optimization with gas and standalone solar/storage reporting without gas
         - Optimizer screens load-scaled capacity ranges, then refines candidates in 100 MW steps; standalone LCOE counts only electricity served
