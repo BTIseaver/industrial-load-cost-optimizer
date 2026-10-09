@@ -1,7 +1,7 @@
 """Streamlit Community Cloud launcher for the industrial load optimizer."""
 
-# A second entrypoint lets Community Cloud deploy this project with a fresh
-# runtime configuration while sharing the primary app's implementation.
-from app import main
+import runpy
 
-main()
+# A second entrypoint lets Community Cloud deploy this project with a fresh
+# runtime configuration while executing the primary app unchanged.
+runpy.run_path("app.py", run_name="__main__")

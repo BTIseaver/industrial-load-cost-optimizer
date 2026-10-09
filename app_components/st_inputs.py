@@ -385,8 +385,9 @@ def create_system_inputs() -> Dict:
             args=("gen",)
         )
             
-        if "gen_type" not in st.session_state:
-            st.session_state.gen_type = query_params.get("gen_type", "Gas Turbine")
+        query_generator_type = query_params.get("gen_type", "Gas Turbine")
+        if st.session_state.get("gen_type") != query_generator_type:
+            st.session_state.gen_type = query_generator_type
         generator_type = st.selectbox(
             "Generator Type",
             ["Gas Engine", "Gas Turbine"],
