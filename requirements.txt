@@ -6,3 +6,4 @@ polars==1.21.0
 pvlib==0.11.2
 reverse_geocoder==1.5.1
 tzfpy==0.16.4
+numba==0.62.1

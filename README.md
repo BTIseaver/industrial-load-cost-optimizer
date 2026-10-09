@@ -1,13 +1,30 @@
 # Introduction
-This is a cost calculator for a datacenter powered by solar, batteries, and gas generation.
+This is an industrial-load cost calculator and optimizer for solar, batteries, and gas generation.
 
-It can simulate a datacenter of any load anywhere in the world, with any combination of solar, battery, and gas generation. The output is a Levelized Cost of Energy (LCOE) in $/MWh, and a yearly financial model.
+It can simulate an industrial load at locations worldwide with combinations of solar, battery, and gas generation. The output is a Levelized Cost of Energy (LCOE) in $/MWh and a yearly financial model.
  
 The code calculates the LCOE using the following steps:
 1. It pulls weather data for the speciifed `(lat, long)`
 2. It simulates the solar power from the weather data
 3. It simulates the powerflow of the system between the solar, battery, generator, and datacenter.
 4. It calculates the annual cashflows and the LCOE of the system.
+
+## Presets and system optimization
+
+The Streamlit app includes Low, Middle, High, and High Cost/Cheaper Storage
+assumption buttons, plus separate Lower Cost Gas and Higher Cost Gas buttons.
+The cheaper-storage preset uses $175/MWh, represented internally as
+$0.175/kWh because the BESS CAPEX input is denominated per kWh.
+
+Four optimization buttons search for a low-LCOE design meeting a 95% or 99%
+renewable-energy target with a gas turbine sized equal to the industrial load.
+The two standalone options then keep that optimized Solar PV/BESS design,
+remove the turbine and its costs, and calculate LCOE using only energy actually
+served; unmet load has no outage penalty in the model. The optimizer screens a
+load-scaled capacity grid and refines promising designs in 100 MW increments.
+The final design is rerun through the original full power-flow and financial
+models. Solar PV and BESS input limits scale with load to accommodate those
+optimized designs.
 
 # Usage
 There are three ways to use this code:

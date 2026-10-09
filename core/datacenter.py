@@ -151,11 +151,22 @@ class DataCenter:
         interest_rate = self.cost_of_debt_pct / 100
         
         # Calculate fixed debt service payment
-        fixed_debt_payment = (total_debt * interest_rate * (1 + interest_rate)**self.debt_term_years / 
-                            ((1 + interest_rate)**self.debt_term_years - 1))
+        if interest_rate == 0:
+            fixed_debt_payment = total_debt / self.debt_term_years
+        else:
+            fixed_debt_payment = (
+                total_debt
+                * interest_rate
+                * (1 + interest_rate) ** self.debt_term_years
+                / ((1 + interest_rate) ** self.debt_term_years - 1)
+            )
         
         # Calculate Federal Investment Tax Credit amount
-        renewable_proportion_of_hard_capex = (solar_capex + bess_capex) / total_hard_capex
+        renewable_proportion_of_hard_capex = (
+            (solar_capex + bess_capex) / total_hard_capex
+            if total_hard_capex
+            else 0.0
+        )
         tax_credit_amount = total_capex * renewable_proportion_of_hard_capex * (self.investment_tax_credit_pct / 100)
         amount_that_is_depreciable = total_capex - tax_credit_amount / 2
 

@@ -57,7 +57,7 @@ METRIC_UNITS = {
 }
 
 def display_intro_section():
-    st.set_page_config(layout="wide", page_title="Solar Industrial Load LCOE Calculator")
+    st.set_page_config(layout="wide", page_title="Industrial Load Cost Calculator & Optimizer")
     # Add custom CSS to reduce top padding
     st.markdown("""
         <style>
@@ -74,7 +74,7 @@ def display_intro_section():
             }
         </style>
     """, unsafe_allow_html=True)
-    st.title("Solar industrial load cost calculator", anchor="solar-datacenter-cost-calculator")
+    st.title("Industrial load cost calculator and optimizer", anchor="solar-datacenter-cost-calculator")
     st.markdown(
         '<p style="font-size: 1em; margin-bottom: 20px;">Adapted by Seaver Wang, originally produced by <a href="https://benjames.io">Ben James</a> and the <a href="https://offgridai.us">offgrid.us</a> team</p>',
         unsafe_allow_html=True
@@ -86,7 +86,10 @@ def display_intro_section():
         - Map tool optimized, manual coordinate entry added
         - Default assumptions simplified (debt financing only, no taxes or incentives, CAPEX subcategories zeroed by default)
         - Industrial load defaults: 500 MW load, 2,500 MW solar/BESS, 1,000 MW gas turbine
-        - Soft CAPEX, O&M, and fuel escalators set to zero; fuel price set to $8/MMBtu; solar/BESS limits raised to 10,000 MW
+        - Soft CAPEX, O&M, and fuel escalators set to zero; fuel price set to $8/MMBtu; Solar/BESS input limits scale with industrial load
+        - Added Low, Middle, High, and High Cost/Cheaper Storage ($175/MWh) cost presets, plus Lower/Higher Cost Gas presets
+        - Added 95% and 99% system optimization with gas and standalone solar/storage reporting without gas
+        - Optimizer screens load-scaled capacity ranges, then refines candidates in 100 MW steps; standalone LCOE counts only electricity served
         """
     )
     
@@ -96,7 +99,7 @@ def display_intro_section():
         1. Input the generation mix, location, and financial assumptions
         2. Solar generation is fetched for the selected location, and solar/battery/generator powerflow is simulated
         3. The tool calculates the Levelised Cost of Energy (LCOE) of the system. It's designed to let you run scenarios across many designs and locations.
-        4. The code powering this tool is [open-source](https://github.com/offgridai-us/cost-calculator).
+        4. The code powering this tool is [open-source](https://github.com/BTIseaver/industrial-load-cost-optimizer).
         """
     )
 

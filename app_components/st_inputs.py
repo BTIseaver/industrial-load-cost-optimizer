@@ -1,5 +1,6 @@
 """Module for handling user inputs in the Streamlit app."""
 
+import math
 import streamlit as st
 import pandas as pd
 from typing import Dict
@@ -16,6 +17,167 @@ import reverse_geocoder as rg
 # Amarillo, TX
 MAP_INITIAL_LAT = 35.199
 MAP_INITIAL_LONG = -101.845
+
+
+_SOFT_COST_WIDGET_KEYS = (
+    "soft_general", "soft_epc", "soft_design", "soft_permit",
+    "soft_startup", "soft_insurance", "soft_taxes",
+)
+_COST_PRESET_VALUES = {
+    "Low Cost": {
+        "debt_cost": 8.0, "leverage": 100.0, "debt_term": 20,
+        "equity_cost": 0.0, "itc": 0.0, "tax_rate": 0.0,
+        "pv_modules": 0.530, "pv_inverters": 0.0, "pv_racking": 0.0,
+        "pv_bos": 0.0, "pv_labor": 0.0,
+        "bess_units": 62.0, "bess_bos": 0, "bess_labor": 0,
+        "si_microgrid": 100, "si_controls": 0, "si_labor": 0,
+        "solar_om": 4, "bess_om": 0.8, "bos_om": 2.0,
+        "soft_om": 0.0, "om_escalator": 0.0, "fuel_escalator": 0.0,
+        "soft_general": 0.0, "soft_epc": 0.0, "soft_design": 0.0,
+        "soft_permit": 0.0, "soft_startup": 0.0,
+        "soft_insurance": 0.0, "soft_taxes": 0.0,
+    },
+    "Middle Cost": {
+        "debt_cost": 9.0, "leverage": 100.0, "debt_term": 20,
+        "equity_cost": 0.0, "itc": 0.0, "tax_rate": 0.0,
+        "pv_modules": 0.667, "pv_inverters": 0.0, "pv_racking": 0.0,
+        "pv_bos": 0.0, "pv_labor": 0.0,
+        "bess_units": 140.0, "bess_bos": 0, "bess_labor": 0,
+        "si_microgrid": 200, "si_controls": 0, "si_labor": 0,
+        "solar_om": 7, "bess_om": 1.7, "bos_om": 4.0,
+        "soft_om": 0.0, "om_escalator": 0.0, "fuel_escalator": 0.0,
+        "soft_general": 0.0, "soft_epc": 0.0, "soft_design": 0.0,
+        "soft_permit": 0.0, "soft_startup": 0.0,
+        "soft_insurance": 0.0, "soft_taxes": 0.0,
+    },
+    "High Cost": {
+        "debt_cost": 10.0, "leverage": 100.0, "debt_term": 20,
+        "equity_cost": 0.0, "itc": 0.0, "tax_rate": 0.0,
+        "pv_modules": 0.785, "pv_inverters": 0.0, "pv_racking": 0.0,
+        "pv_bos": 0.0, "pv_labor": 0.0,
+        "bess_units": 378.0, "bess_bos": 0, "bess_labor": 0,
+        "si_microgrid": 300, "si_controls": 0, "si_labor": 0,
+        "solar_om": 11, "bess_om": 2.5, "bos_om": 6.0,
+        "soft_om": 0.0, "om_escalator": 0.0, "fuel_escalator": 0.0,
+        "soft_general": 0.0, "soft_epc": 0.0, "soft_design": 0.0,
+        "soft_permit": 0.0, "soft_startup": 0.0,
+        "soft_insurance": 0.0, "soft_taxes": 0.0,
+    },
+    # The app stores BESS CAPEX in $/kWh, so $175/MWh is $0.175/kWh.
+    "High Cost, Cheaper Storage": {
+        "debt_cost": 10.0, "leverage": 100.0, "debt_term": 20,
+        "equity_cost": 0.0, "itc": 0.0, "tax_rate": 0.0,
+        "pv_modules": 0.785, "pv_inverters": 0.0, "pv_racking": 0.0,
+        "pv_bos": 0.0, "pv_labor": 0.0,
+        "bess_units": 0.175, "bess_bos": 0, "bess_labor": 0,
+        "si_microgrid": 300, "si_controls": 0, "si_labor": 0,
+        "solar_om": 11, "bess_om": 2.5, "bos_om": 6.0,
+        "soft_om": 0.0, "om_escalator": 0.0, "fuel_escalator": 0.0,
+        "soft_general": 0.0, "soft_epc": 0.0, "soft_design": 0.0,
+        "soft_permit": 0.0, "soft_startup": 0.0,
+        "soft_insurance": 0.0, "soft_taxes": 0.0,
+    },
+}
+
+_GAS_PRESETS = {
+    "Lower Cost Gas (default)": {
+        "gensets": 635, "gen_bos": 0, "gen_labor": 0,
+        "gen_om_fixed": 15.0, "fuel_price": 8.0,
+    },
+    "Higher Cost Gas": {
+        "gensets": 1_000, "gen_bos": 0, "gen_labor": 0,
+        "gen_om_fixed": 32.0, "fuel_price": 11.0,
+    },
+}
+_COST_PRESET_KEYS = set(_COST_PRESET_VALUES["High Cost"])
+_GAS_PRESET_KEYS = set(_GAS_PRESETS["Higher Cost Gas"]) | {"gen_type"}
+
+
+def _apply_widget_values(values: Dict, label_key: str, label: str) -> None:
+    """Apply a preset before widgets are created on the next Streamlit rerun."""
+    for key, value in values.items():
+        st.session_state[key] = value
+        if key != "depreciation_schedule":
+            st.query_params[key] = value
+    st.session_state[label_key] = label
+
+
+def apply_cost_preset(preset_name: str) -> None:
+    values = dict(_COST_PRESET_VALUES[preset_name])
+    values["depreciation_schedule"] = pd.DataFrame(
+        {"Year": range(1, 21), "Depreciation (%)": [0.0] * 20}
+    )
+    _apply_widget_values(values, "active_cost_preset", preset_name)
+
+
+def apply_gas_preset(preset_name: str) -> None:
+    values = dict(_GAS_PRESETS[preset_name])
+    values["gen_type"] = "Gas Turbine"
+    _apply_widget_values(values, "active_gas_preset", preset_name)
+
+
+def create_preset_controls() -> None:
+    """Render explicit cost and gas assumption preset buttons."""
+    st.subheader("Quick assumption presets")
+    st.caption(
+        "Cost presets replace the financial, CAPEX, and non-gas O&M inputs. "
+        "Gas cost is selected separately; you can edit any value afterward."
+    )
+    cost_columns = st.columns(4)
+    for column, (label, preset_key) in zip(
+        cost_columns,
+        [
+            ("Low Cost", "Low Cost"),
+            ("Middle Cost", "Middle Cost"),
+            ("High Cost", "High Cost"),
+            ("High Cost, Cheaper Storage", "High Cost, Cheaper Storage"),
+        ],
+    ):
+        with column:
+            st.button(
+                label,
+                key=f"apply_cost_{preset_key.lower().replace(' ', '_').replace(',', '')}",
+                help=(
+                    "Uses high-cost assumptions with BESS CAPEX at $175/MWh "
+                    "($0.175/kWh)."
+                    if preset_key == "High Cost, Cheaper Storage"
+                    else f"Apply the {preset_key.lower()} cost assumptions."
+                ),
+                on_click=apply_cost_preset,
+                args=(preset_key,),
+                use_container_width=True,
+            )
+
+    if "active_cost_preset" not in st.session_state:
+        st.session_state.active_cost_preset = "Current input values"
+    st.caption(f"Cost preset: {st.session_state.active_cost_preset}")
+
+    gas_columns = st.columns(2)
+    for column, preset_name in zip(gas_columns, _GAS_PRESETS):
+        with column:
+            st.button(
+                preset_name,
+                key=f"apply_gas_{preset_name.lower().replace(' ', '_').replace('(', '').replace(')', '')}",
+                help=(
+                    "$635/kW gas-turbine CAPEX, $15/kW-year fixed O&M, "
+                    "$8/MMBtu fuel. This is the default."
+                    if preset_name.startswith("Lower")
+                    else "$1,000/kW gas-turbine CAPEX, $32/kW-year fixed O&M, "
+                    "$11/MMBtu fuel."
+                ),
+                on_click=apply_gas_preset,
+                args=(preset_name,),
+                use_container_width=True,
+            )
+    if "active_gas_preset" not in st.session_state:
+        if any(
+            key in st.query_params
+            for key in ("gensets", "gen_om_fixed", "fuel_price")
+        ):
+            st.session_state.active_gas_preset = "Custom (URL values)"
+        else:
+            apply_gas_preset("Lower Cost Gas (default)")
+    st.caption(f"Gas preset: {st.session_state.active_gas_preset}")
 
 
 def calculate_capex_subtotals(inputs: Dict) -> Dict[str, Dict[str, float]]:
@@ -152,6 +314,8 @@ def create_system_inputs() -> Dict:
     
     def update_param(key: str):
         st.query_params[key] = st.session_state[key]
+        if key in _GAS_PRESET_KEYS:
+            st.session_state.active_gas_preset = "Custom (edited)"
     
     with col1:
         datacenter_load = st.number_input(
@@ -164,15 +328,30 @@ def create_system_inputs() -> Dict:
             on_change=update_param,
             args=("dc_load",)
         )
+
+    # Extend the component inputs with load so optimized results can be
+    # represented directly in the controls, including locations with seasonal
+    # storage requirements above the former 10 GW cap.
+    solar_capacity_limit = max(
+        10_000,
+        int(math.ceil(datacenter_load * 150 / 100) * 100),
+        int(st.session_state.get("solar", query_params.get("solar", 0)) or 0),
+    )
+    bess_capacity_limit = max(
+        10_000,
+        int(math.ceil(datacenter_load * 500 / 100) * 100),
+        int(st.session_state.get("bess", query_params.get("bess", 0)) or 0),
+    )
             
     with col2:
         solar_pv_capacity = st.number_input(
             "Solar PV Capacity (MW DC)",
-            value=int(query_params.get("solar", 2500)),
+            value=min(int(query_params.get("solar", 2500)), solar_capacity_limit),
             min_value=0,
-            max_value=10000,
+            max_value=solar_capacity_limit,
             step=50,
             key="solar",
+            help=f"The input limit scales with load; current maximum is {solar_capacity_limit:,} MW.",
             on_change=update_param,
             args=("solar",)
         )
@@ -180,11 +359,12 @@ def create_system_inputs() -> Dict:
     with col3:
         bess_max_power = st.number_input(
             "BESS Power (MW), 4hr store",
-            value=int(query_params.get("bess", 2500)),
+            value=min(int(query_params.get("bess", 2500)), bess_capacity_limit),
             min_value=0,
-            max_value=10000,
+            max_value=bess_capacity_limit,
             step=50,
             key="bess",
+            help=f"The input limit scales with load; current maximum is {bess_capacity_limit:,} MW.",
             on_change=update_param,
             args=("bess",)
         )
@@ -192,9 +372,13 @@ def create_system_inputs() -> Dict:
     with col4:
         generator_capacity = st.number_input(
             "Generator Capacity (MW)",
-            value=int(query_params.get("gen", 1000)),
+            value=min(int(query_params.get("gen", 1000)), max(1000, int(datacenter_load))),
             min_value=0,
-            max_value=1000,
+            max_value=max(
+                1000,
+                int(datacenter_load),
+                int(st.session_state.get("gen", query_params.get("gen", 0)) or 0),
+            ),
             step=10,
             key="gen",
             on_change=update_param,
@@ -343,6 +527,10 @@ def create_financial_inputs(generator_type: str) -> Dict:
     
     def update_param(key: str):
         st.query_params[key] = st.session_state[key]
+        if key in _COST_PRESET_KEYS:
+            st.session_state.active_cost_preset = "Custom (edited)"
+        if key in _GAS_PRESET_KEYS:
+            st.session_state.active_gas_preset = "Custom (edited)"
     
     # Financial Inputs
     with st.expander("Capital Structure", expanded=True):
@@ -492,8 +680,10 @@ def create_financial_inputs(generator_type: str) -> Dict:
         with col1:
             bess_units = st.number_input(
                 "BESS Units ($/kWh)",
-                value=int(query_params.get("bess_units", DEFAULTS_BESS_CAPEX['units'])),
-                format="%d",
+                value=float(query_params.get("bess_units", DEFAULTS_BESS_CAPEX['units'])),
+                min_value=0.0,
+                step=0.1,
+                format="%.3f",
                 key="bess_units",
                 on_change=update_param,
                 args=("bess_units",)
