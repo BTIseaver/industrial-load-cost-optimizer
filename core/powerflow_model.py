@@ -61,6 +61,61 @@ def st_conditional_cache(func):
         return func
 
 
+def optimal_fixed_array_orientation(latitude: float) -> tuple[float, float]:
+    """Return a simple latitude-binned annual-tilt estimate and equator-facing azimuth.
+
+    Latitude is rounded to the nearest 5-degree bin, then the tilt is set to
+    90% of that bin and rounded to the nearest 5 degrees. This is a practical
+    rule of thumb, not a site-specific energy or cost optimization.
+    Azimuth follows pvlib's convention: degrees clockwise from north.
+    """
+    latitude = float(latitude)
+    if not -90.0 <= latitude <= 90.0:
+        raise ValueError("Latitude must be between -90 and 90 degrees.")
+
+    latitude_bin = 5.0 * int(abs(latitude) / 5.0 + 0.5)
+    tilt = 5.0 * int((0.9 * latitude_bin) / 5.0 + 0.5)
+    azimuth = 180.0 if latitude >= 0 else 0.0
+    return min(90.0, tilt), azimuth
+
+
+def _model_solar_ac_dataframe(
+    latitude: float,
+    longitude: float,
+    weather_data: pd.DataFrame,
+    system_type: str = "single-axis",
+    surface_tilt: float = 20,
+    surface_azimuth: float = 180,
+) -> pd.DataFrame:
+    """Model one mounting configuration from already-fetched PVGIS weather."""
+    if system_type.lower() == "fixed-tilt":
+        mount = pvsystem.FixedMount(
+            surface_tilt=surface_tilt, surface_azimuth=surface_azimuth
+        )
+    elif system_type.lower() == "single-axis":
+        mount = pvsystem.SingleAxisTrackerMount()
+    else:
+        raise ValueError("system_type must be either 'fixed-tilt' or 'single-axis'")
+
+    array = pvsystem.Array(mount, **PVLIB_CONFIG)
+    site = location.Location(latitude, longitude)
+    pv_system = pvsystem.PVSystem(
+        arrays=[array],
+        inverter_parameters={"pdc0": PVLIB_CONFIG["module_parameters"]["pdc0"]},
+    )
+    model = modelchain.ModelChain(
+        pv_system, site, aoi_model="physical", spectral_model="no_loss"
+    )
+    model.run_model(weather_data)
+
+    solar_generation_df = model.results.ac.reset_index()
+    timezone_str = tzfpy.get_tz(longitude, latitude)
+    solar_generation_df["time_local"] = solar_generation_df["time(UTC)"].dt.tz_convert(
+        timezone_str
+    )
+    return solar_generation_df
+
+
 @st_conditional_cache
 def get_solar_ac_dataframe(
     latitude: float,
@@ -93,34 +148,6 @@ def get_solar_ac_dataframe(
         f"Starting solar AC calculation for {latitude}, {longitude} with {system_type} system"
     )
 
-    # Create mount based on system type
-    if system_type.lower() == "fixed-tilt":
-        mount = pvsystem.FixedMount(
-            surface_tilt=surface_tilt, surface_azimuth=surface_azimuth
-        )
-    elif system_type.lower() == "single-axis":
-        mount = pvsystem.SingleAxisTrackerMount()
-    else:
-        raise ValueError("system_type must be either 'fixed-tilt' or 'single-axis'")
-
-    # Get timezone for the location using tzfpy
-    timezone_str = tzfpy.get_tz(longitude, latitude)  # Note: tzfpy takes (lon, lat) order
-    
-    # Create array and location objects with timezone
-    array = pvsystem.Array(mount, **PVLIB_CONFIG)
-    site = location.Location(latitude, longitude)  # Removed timezone parameter
-
-    # Create PV system with normalized 1 MW rating
-    pv_system = pvsystem.PVSystem(
-        arrays=[array],
-        inverter_parameters={"pdc0": PVLIB_CONFIG["module_parameters"]["pdc0"]},
-    )
-
-    # Configure model chain with physical AOI model
-    model = modelchain.ModelChain(
-        pv_system, site, aoi_model="physical", spectral_model="no_loss"
-    )
-
     # Fetch and process weather data
     weather_start = time.time()
     try:
@@ -130,18 +157,43 @@ def get_solar_ac_dataframe(
         st.warning("you can't pick somewhere over the sea !!!!")
         st.stop()
 
-    # Run performance model
     model_start = time.time()
-    model.run_model(weather_data)
+    solar_generation_df = _model_solar_ac_dataframe(
+        latitude,
+        longitude,
+        weather_data,
+        system_type=system_type,
+        surface_tilt=surface_tilt,
+        surface_azimuth=surface_azimuth,
+    )
     logger.debug(f"Model run took {(time.time() - model_start)*1000:.1f} ms")
-
-    # Process the results
-    solar_generation_df = model.results.ac.reset_index()
-    
-    # Convert UTC times to local timezone (timestamps are already UTC-aware)
-    solar_generation_df["time_local"] = solar_generation_df["time(UTC)"].dt.tz_convert(timezone_str)
-
     return solar_generation_df
+
+
+@st_conditional_cache
+def get_tracking_and_fixed_solar_dataframes(
+    latitude: float, longitude: float, surface_tilt: float, surface_azimuth: float
+) -> Dict[str, pd.DataFrame]:
+    """Build tracker and fixed-array profiles from one PVGIS TMY download."""
+    try:
+        weather_data = iotools.get_pvgis_tmy(latitude, longitude)[0]
+    except requests.exceptions.HTTPError:
+        st.warning("you can't pick somewhere over the sea !!!!")
+        st.stop()
+
+    return {
+        "tracking": _model_solar_ac_dataframe(
+            latitude, longitude, weather_data.copy(), system_type="single-axis"
+        ),
+        "fixed": _model_solar_ac_dataframe(
+            latitude,
+            longitude,
+            weather_data.copy(),
+            system_type="fixed-tilt",
+            surface_tilt=surface_tilt,
+            surface_azimuth=surface_azimuth,
+        ),
+    }
 
 
 def simulate_battery_operation(

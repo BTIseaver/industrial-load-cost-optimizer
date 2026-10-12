@@ -27,6 +27,8 @@ from core.powerflow_model import (
     SYSTEM_LIFETIME_YEARS,
     calculate_energy_mix,
     get_solar_ac_dataframe,
+    get_tracking_and_fixed_solar_dataframes,
+    optimal_fixed_array_orientation,
     simulate_system,
 )
 
@@ -159,6 +161,24 @@ def _run_case(
 
 def _render_completed_results(results: Dict) -> None:
     optimization = results.get("optimization")
+    configuration = results.get("array_configuration", {})
+    comparison = results.get("array_comparison", [])
+    if configuration:
+        st.success(f"Selected solar configuration: **{configuration['label']}**")
+        if len(comparison) > 1:
+            comparison_text = " · ".join(
+                f"{item['label']}: ${item['lcoe']:.2f}/MWh "
+                f"({item['solar_capacity_mw']:,} MW PV / "
+                f"{item['bess_power_mw']:,} MW BESS)"
+                for item in comparison
+            )
+            st.caption(f"Compared optimized LCOE — {comparison_text}")
+        elif configuration.get("system_type") == "fixed-tilt":
+            st.caption(
+                "Fixed-array tilt uses the rounded-latitude × 0.9 rule; "
+                "azimuth faces the equator."
+            )
+
     if optimization:
         st.subheader("Optimization Results")
         metric_cols = st.columns(4)
@@ -211,6 +231,36 @@ def main() -> None:
     with financial_col:
         inputs.update(create_financial_inputs(inputs["generator_type"]))
 
+    st.subheader("Solar array configuration")
+    st.caption(
+        "With both options off, the tool evaluates tracking and a latitude-binned "
+        "fixed array, then reports the lower-LCOE configuration."
+    )
+    st.session_state.setdefault("tracking_array_only", False)
+    st.session_state.setdefault("fixed_array_only", False)
+
+    def tracking_only_changed() -> None:
+        if st.session_state.tracking_array_only:
+            st.session_state.fixed_array_only = False
+
+    def fixed_only_changed() -> None:
+        if st.session_state.fixed_array_only:
+            st.session_state.tracking_array_only = False
+
+    tracking_col, fixed_col = st.columns(2)
+    with tracking_col:
+        st.toggle(
+            "Run/optimize for tracking array only",
+            key="tracking_array_only",
+            on_change=tracking_only_changed,
+        )
+    with fixed_col:
+        st.toggle(
+            "Run/optimize for fixed-array only",
+            key="fixed_array_only",
+            on_change=fixed_only_changed,
+        )
+
     st.divider()
     run_calculation = st.button(
         "Run calculation",
@@ -246,8 +296,54 @@ def main() -> None:
 
     if run_calculation or optimize_action:
         try:
+            tracking_only = st.session_state.tracking_array_only
+            fixed_only = st.session_state.fixed_array_only
+            fixed_tilt, fixed_azimuth = optimal_fixed_array_orientation(lat)
             with st.spinner(f"Fetching solar resource for {location_name}…"):
-                solar_dataframe = get_solar_ac_dataframe(lat, longitude)
+                if tracking_only:
+                    solar_dataframes = {
+                        "tracking": get_solar_ac_dataframe(lat, longitude)
+                    }
+                elif fixed_only:
+                    solar_dataframes = {
+                        "fixed": get_solar_ac_dataframe(
+                            lat,
+                            longitude,
+                            system_type="fixed-tilt",
+                            surface_tilt=fixed_tilt,
+                            surface_azimuth=fixed_azimuth,
+                        )
+                    }
+                else:
+                    solar_dataframes = get_tracking_and_fixed_solar_dataframes(
+                        lat, longitude, fixed_tilt, fixed_azimuth
+                    )
+
+            configurations = []
+            for key, solar_dataframe in solar_dataframes.items():
+                if key == "tracking":
+                    configurations.append(
+                        {
+                            "key": key,
+                            "label": "Single-axis tracking",
+                            "system_type": "single-axis",
+                            "solar_dataframe": solar_dataframe,
+                            "tilt": None,
+                            "azimuth": None,
+                        }
+                    )
+                else:
+                    facing = "south" if fixed_azimuth == 180 else "north"
+                    configurations.append(
+                        {
+                            "key": key,
+                            "label": f"Fixed array ({fixed_tilt:.0f}° tilt, due {facing})",
+                            "system_type": "fixed-tilt",
+                            "solar_dataframe": solar_dataframe,
+                            "tilt": fixed_tilt,
+                            "azimuth": fixed_azimuth,
+                        }
+                    )
 
             if optimize_action:
                 target, standalone = optimize_action
@@ -259,61 +355,108 @@ def main() -> None:
                 generator_type = "Gas Turbine"
                 limits = capacity_search_limits(load_mw)
                 progress_bar = st.progress(0.0, text="Preparing the capacity search…")
-
-                def update_progress(_stage: str, amount: float, message: str) -> None:
-                    progress_bar.progress(amount, text=message)
-
                 search_inputs = dict(inputs)
                 search_inputs["generator_type"] = generator_type
                 gas_sized_inputs = dict(search_inputs)
                 gas_sized_inputs["generator_capacity_mw"] = load_mw
                 search_capex = calculate_capex_subtotals(gas_sized_inputs)
-                profile = solar_dataframe["p_mp"].to_numpy(dtype=np.float64)
-
-                with st.spinner(
-                    f"Searching {limits[0]:,} MW solar by {limits[1]:,} MW BESS bounds…"
-                ):
-                    optimum = optimize_design(
-                        profile,
-                        load_mw,
-                        target,
-                        generator_type,
-                        search_inputs,
-                        search_capex,
-                        limits[0],
-                        limits[1],
-                        limits[2],
-                        scan_function=_cached_capacity_scan,
-                        progress_callback=update_progress,
+                candidate_results = []
+                for config_index, config in enumerate(configurations):
+                    profile = config["solar_dataframe"]["p_mp"].to_numpy(
+                        dtype=np.float64
                     )
 
-                generator_capacity = 0 if standalone else load_mw
-                results = _run_case(
-                    search_inputs,
-                    solar_dataframe,
-                    optimum["solar_mw"],
-                    optimum["bess_mw"],
-                    generator_capacity,
-                    generator_type,
-                    remove_generator_costs=standalone,
-                )
-                results["optimization"] = {
-                    **optimum,
-                    "standalone": standalone,
-                    "load_mw": load_mw,
-                }
+                    def update_progress(
+                        _stage: str,
+                        amount: float,
+                        message: str,
+                        *,
+                        index: int = config_index,
+                        label: str = config["label"],
+                    ) -> None:
+                        progress_bar.progress(
+                            (index + amount) / len(configurations),
+                            text=f"{label}: {message}",
+                        )
+
+                    with st.spinner(
+                        f"Optimizing {config['label']} within "
+                        f"{limits[0]:,} MW solar × {limits[1]:,} MW BESS bounds…"
+                    ):
+                        optimum = optimize_design(
+                            profile,
+                            load_mw,
+                            target,
+                            generator_type,
+                            search_inputs,
+                            search_capex,
+                            limits[0],
+                            limits[1],
+                            limits[2],
+                            scan_function=_cached_capacity_scan,
+                            progress_callback=update_progress,
+                        )
+
+                    generator_capacity = 0 if standalone else load_mw
+                    result = _run_case(
+                        search_inputs,
+                        config["solar_dataframe"],
+                        optimum["solar_mw"],
+                        optimum["bess_mw"],
+                        generator_capacity,
+                        generator_type,
+                        remove_generator_costs=standalone,
+                    )
+                    result["optimization"] = {
+                        **optimum,
+                        "standalone": standalone,
+                        "load_mw": load_mw,
+                    }
+                    result["array_configuration"] = {
+                        key: config[key]
+                        for key in ("label", "system_type", "tilt", "azimuth")
+                    }
+                    candidate_results.append(result)
+
+                results = min(candidate_results, key=lambda item: item["lcoe"])
+                results["array_comparison"] = [
+                    {
+                        **result["array_configuration"],
+                        "lcoe": result["lcoe"],
+                        "solar_capacity_mw": result["solar_capacity_mw"],
+                        "bess_power_mw": result["bess_power_mw"],
+                    }
+                    for result in candidate_results
+                ]
                 progress_bar.empty()
                 st.session_state.calculation_results = results
                 st.session_state.calculation_location = location_name
             else:
-                results = _run_case(
-                    inputs,
-                    solar_dataframe,
-                    inputs["solar_pv_capacity_mw"],
-                    inputs["bess_max_power_mw"],
-                    inputs["generator_capacity_mw"],
-                    inputs["generator_type"],
-                )
+                candidate_results = []
+                for config in configurations:
+                    result = _run_case(
+                        inputs,
+                        config["solar_dataframe"],
+                        inputs["solar_pv_capacity_mw"],
+                        inputs["bess_max_power_mw"],
+                        inputs["generator_capacity_mw"],
+                        inputs["generator_type"],
+                    )
+                    result["array_configuration"] = {
+                        key: config[key]
+                        for key in ("label", "system_type", "tilt", "azimuth")
+                    }
+                    candidate_results.append(result)
+                results = min(candidate_results, key=lambda item: item["lcoe"])
+                results["array_comparison"] = [
+                    {
+                        **result["array_configuration"],
+                        "lcoe": result["lcoe"],
+                        "solar_capacity_mw": result["solar_capacity_mw"],
+                        "bess_power_mw": result["bess_power_mw"],
+                    }
+                    for result in candidate_results
+                ]
                 st.session_state.calculation_results = results
                 st.session_state.calculation_location = location_name
         except ValueError as error:

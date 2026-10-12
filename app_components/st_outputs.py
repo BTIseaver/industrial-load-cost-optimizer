@@ -90,6 +90,7 @@ def display_intro_section():
         - Added Low, Middle, High, and High Cost/Cheaper Storage ($175/MWh) cost presets, plus Lower/Higher Cost Gas presets
         - Added 95% and 99% system optimization with gas and standalone solar/storage reporting without gas
         - Optimizer screens load-scaled capacity ranges, then refines candidates in 100 MW steps; standalone LCOE counts only electricity served
+        - Added tracking-versus-fixed-array comparison; fixed tilt uses 90% of latitude rounded to 5-degree bins, facing the equator
         """
     )
     
